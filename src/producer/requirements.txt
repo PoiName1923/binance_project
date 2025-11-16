@@ -1,0 +1,5 @@
+aiokafka
+websockets
+python-dotenv
+aiokafka
+websockets
