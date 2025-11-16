@@ -5,7 +5,7 @@ services:
 # =================================================================== CLICKHOUSE CONFIG =====================================================================
 # ===========================================================================================================================================================
   clickhouse:
-    image: clickhouse/clickhouse-server:23.8
+    image: clickhouse/clickhouse-server:24.8
     container_name: clickhouse
     restart: unless-stopped
     ports:
@@ -35,7 +35,7 @@ services:
       - project-network
 # ============================================================================================================================  
   clickhouse-init:
-    image: clickhouse/clickhouse-server:23.8
+    image: clickhouse/clickhouse-server:24.8
     container_name: clickhouse-init
     depends_on:
       clickhouse:
@@ -43,37 +43,33 @@ services:
     env_file:
       - .env
     volumes:
-      - ./src/consumer/jobs/init_clickhouse.sql:/init_clickhouse.sql:ro
+      - ./scripts/init/init_clickhouse.sql:/init_clickhouse.sql:ro
     entrypoint: /bin/bash
-    command: -lc "clickhouse-client --host ${CLICKHOUSE_HOST} --port ${CLICKHOUSE_TCP_PORT} --user ${CLICKHOUSE_USER} --password ${CLICKHOUSE_PASSWORD} < /init_clickhouse.sql"
+    command: -lc "clickhouse-client -n --host ${CLICKHOUSE_HOST} --port ${CLICKHOUSE_TCP_PORT} --user ${CLICKHOUSE_USER} --password ${CLICKHOUSE_PASSWORD} < /init_clickhouse.sql"
     networks:
       - project-network
-      
+
 # ============================================================================================================================  
-  clickhouse-ui:
-    image: spoonest/clickhouse-tabix-web-client:latest
+  ch-ui:
+    image: ghcr.io/duyet/clickhouse-monitoring:456ad9c
     container_name: clickhouse-ui
+    restart: always
     depends_on:
       clickhouse:
         condition: service_healthy
-    environment:
-      CH_HOST: clickhouse
-      CH_LOGIN: ${CLICKHOUSE_USER:-default}
-      CH_PASSWORD: ${CLICKHOUSE_PASSWORD:-clickhouse}
-      CH_PORT: 8123
     ports:
-      - "8086:80"
-    restart: unless-stopped
-    mem_limit: 256m
+      - "3000:3000"
+    environment:
+      CLICKHOUSE_HOST: http://${CLICKHOUSE_HOST}:${CLICKHOUSE_HTTP_PORT}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-default}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-clickhouse}
+      CLICKHOUSE_TZ: Asia/Ho_Chi_Minh
+      CLICKHOUSE_MAX_EXECUTION_TIME: 15
+      NEXT_QUERY_CACHE_TTL: 86400
+    mem_limit: 512m
     cpus: 0.5
     networks:
       - project-network
-    healthcheck:
-      test: ["CMD-SHELL", "bash -lc 'echo > /dev/tcp/localhost/80' "]
-      interval: 10s
-      timeout: 10s
-      retries: 12
-
 # ===========================================================================================================================================================
 # ================================================================ KAFKA CONFIG ============================================================================
 # ===========================================================================================================================================================
@@ -205,8 +201,6 @@ services:
         condition: service_healthy
     env_file:
       - .env
-    volumes:
-      - ./src/consumer:/opt/flink/jobs/consumer
     environment:
       - |
         FLINK_PROPERTIES=
@@ -246,8 +240,6 @@ services:
         condition: service_healthy
     env_file:
       - .env
-    volumes:
-      - ./src/consumer:/opt/flink/jobs/consumer
     environment:
       - |
         FLINK_PROPERTIES=
@@ -280,26 +272,13 @@ services:
         condition: service_started
       minio:
         condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      clickhouse-init:
+        condition: service_completed_successfully
     env_file:
       - .env
-    environment:
-      - |
-        FLINK_PROPERTIES=
-        jobmanager.rpc.address: jobmanager
-        rest.address: jobmanager
-        parallelism.default: 2
-        execution.checkpointing.checkpoint-storage: filesystem
-        state.checkpoints.dir: s3a://${MINIO_BUCKET}/flink/checkpoints
-        state.savepoints.dir: s3a://${MINIO_BUCKET}/flink/savepoints
-        fs.s3a.endpoint: http://${MINIO_HOST}:${MINIO_PORT}
-        fs.s3a.access.key: ${MINIO_ROOT_USER}
-        fs.s3a.secret.key: ${MINIO_ROOT_PASSWORD}
-        fs.s3a.path.style.access: true
-        fs.s3a.connection.ssl.enabled: false
-        fs.s3a.aws.credentials.provider: org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider
-    volumes:
-      - ./src/consumer:/opt/flink/jobs/consumer
-    command: flink run -m jobmanager:8081 -py /opt/flink/jobs/consumer/jobs/main.py
+    command: flink run -m jobmanager:8081 -py /opt/flink/jobs/main.py --pyFiles file:///opt/flink/jobs
     networks:
       - project-network
     healthcheck:
