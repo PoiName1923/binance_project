@@ -1,0 +1,45 @@
+# RPC & cluster
+jobmanager.rpc.address: jobmanager
+jobmanager.memory.process.size: 768m
+jobmanager.memory.jvm-overhead.min: 160m
+jobmanager.memory.jvm-overhead.max: 256m
+taskmanager.memory.process.size: 1280m
+taskmanager.memory.jvm-overhead.min: 160m
+taskmanager.memory.jvm-overhead.max: 256m
+taskmanager.memory.managed.fraction: 0.2
+taskmanager.numberOfTaskSlots: 2
+parallelism.default: 1
+rest.port: 8081
+
+# Restart strategy (use proper key names to avoid warnings)
+restart-strategy.type: failure-rate
+restart-strategy.failure-rate.max-failures-per-interval: 3
+restart-strategy.failure-rate.failure-rate-interval: 5 min
+restart-strategy.failure-rate.delay: 10 s
+
+# Checkpointing
+execution.checkpointing.interval: 30 s
+execution.checkpointing.min-pause: 10 s
+execution.checkpointing.timeout: 3 min
+execution.checkpointing.max-concurrent-checkpoints: 1
+execution.checkpointing.checkpoint-storage: filesystem
+execution.checkpointing.externalized-checkpoint-retention: RETAIN_ON_CANCELLATION
+execution.checkpointing.tolerable-failed-checkpoints: 3
+execution.checkpointing.unaligned.enabled: true
+
+# Table / mini-batch
+table.exec.mini-batch.enabled: true
+table.exec.mini-batch.allow-latency: 2 s
+table.exec.mini-batch.size: 2000
+table.exec.source.idle-timeout: 30 s
+
+# State backend / MinIO (S3A)
+state.checkpoints.dir: s3a://${MINIO_BUCKET}/flink/checkpoints
+state.savepoints.dir: s3a://${MINIO_BUCKET}/flink/savepoints
+
+fs.s3a.endpoint: http://${MINIO_HOST}:${MINIO_PORT}
+fs.s3a.access.key: ${MINIO_ROOT_USER}
+fs.s3a.secret.key: ${MINIO_ROOT_PASSWORD}
+fs.s3a.path.style.access: true
+fs.s3a.connection.ssl.enabled: false
+fs.s3a.aws.credentials.provider: org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider
