@@ -24,6 +24,7 @@ RUN python3 -m pip install -r /opt/flink/requirements.txt
 # Copy job jars and entrypoint script
 COPY jars/*.jar /opt/flink/lib/
 COPY jobs /opt/flink/jobs
+COPY entrypoint.sh /opt/flink/jobs/entrypoint.sh
 
 RUN chmod +x /opt/flink/jobs/entrypoint.sh
 ENTRYPOINT ["/opt/flink/jobs/entrypoint.sh"]
