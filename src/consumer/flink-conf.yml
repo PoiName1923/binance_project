@@ -1,8 +1,12 @@
 # RPC & cluster
 jobmanager.rpc.address: jobmanager
+jobmanager.hostname: jobmanager
+jobmanager.bind-host: 0.0.0.0
 jobmanager.memory.process.size: 768m
 jobmanager.memory.jvm-overhead.min: 160m
 jobmanager.memory.jvm-overhead.max: 256m
+taskmanager.host: taskmanager
+taskmanager.bind-host: 0.0.0.0
 taskmanager.memory.process.size: 1280m
 taskmanager.memory.jvm-overhead.min: 160m
 taskmanager.memory.jvm-overhead.max: 256m

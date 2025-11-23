@@ -6,33 +6,16 @@ from ddl.ddl_sink import (
     ddl_sink_bronze_to_minio,
     ddl_sink_silver_to_clickhouse,
     ddl_sink_silver_to_minio,
-    ddl_sink_gold_to_clickhouse,
-    ddl_sink_gold_to_minio,
-    ddl_sink_price_alerts_clickhouse,
-    ddl_sink_price_alerts_minio,
     ddl_sink_trade_anomalies_clickhouse,
     ddl_sink_trade_anomalies_minio,
 )
 from ddl.ddl_flow import (
     ddl_create_silver_view,
-    ddl_create_gold_1m_view,
-    ddl_create_gold_5m_view,
-    ddl_create_gold_15m_view,
     ddl_insert_bronze_to_minio,
     ddl_insert_silver_to_clickhouse,
     ddl_insert_silver_to_minio,
-    ddl_insert_gold_to_clickhouse,
-    ddl_insert_gold_to_minio,
-    ddl_insert_price_alerts_clickhouse,
-    ddl_insert_price_alerts_minio,
-    ddl_insert_trade_anom_qty_5m_clickhouse,
-    ddl_insert_trade_anom_qty_5m_minio,
-    ddl_insert_trade_anom_price_up_5m_clickhouse,
-    ddl_insert_trade_anom_price_up_5m_minio,
-    ddl_insert_trade_anom_price_down_5m_clickhouse,
-    ddl_insert_trade_anom_price_down_5m_minio,
-    ddl_insert_trade_anom_qty_15m_clickhouse,
-    ddl_insert_trade_anom_qty_15m_minio,
+    ddl_insert_trade_anomalies_clickhouse,
+    ddl_insert_trade_anomalies_minio,
 )
 
 import logging
@@ -55,8 +38,6 @@ def main():
     if settings.ENABLE_CLICKHOUSE_SINK:
         logger.info("Creating ClickHouse sink tables...")
         t_env.execute_sql(ddl_sink_silver_to_clickhouse)
-        t_env.execute_sql(ddl_sink_gold_to_clickhouse)
-        t_env.execute_sql(ddl_sink_price_alerts_clickhouse)
         t_env.execute_sql(ddl_sink_trade_anomalies_clickhouse)
     else:
         logger.info("Skip creating ClickHouse sinks (SINK_TARGET=%s)", settings.SINK_TARGET)
@@ -65,8 +46,6 @@ def main():
         logger.info("Creating MinIO filesystem sinks...")
         t_env.execute_sql(ddl_sink_bronze_to_minio)
         t_env.execute_sql(ddl_sink_silver_to_minio)
-        t_env.execute_sql(ddl_sink_gold_to_minio)
-        t_env.execute_sql(ddl_sink_price_alerts_minio)
         t_env.execute_sql(ddl_sink_trade_anomalies_minio)
     else:
         logger.info("Skip creating MinIO sinks (SINK_TARGET=%s)", settings.SINK_TARGET)
@@ -74,9 +53,6 @@ def main():
     # Transformations / Views
     logger.info("Creating silver view (standardize + cast + filter)...")
     t_env.execute_sql(ddl_create_silver_view)
-    t_env.execute_sql(ddl_create_gold_1m_view)
-    t_env.execute_sql(ddl_create_gold_5m_view)
-    t_env.execute_sql(ddl_create_gold_15m_view)
 
     # Statement set to run all inserts concurrently
     if not (settings.ENABLE_CLICKHOUSE_SINK or settings.ENABLE_MINIO_SINK):
@@ -92,33 +68,13 @@ def main():
         inserts_added += 1
         stmt_set.add_insert_sql(ddl_insert_silver_to_minio)
         inserts_added += 1
-        stmt_set.add_insert_sql(ddl_insert_gold_to_minio)
-        inserts_added += 1
-        stmt_set.add_insert_sql(ddl_insert_price_alerts_minio)
-        inserts_added += 1
-        stmt_set.add_insert_sql(ddl_insert_trade_anom_qty_5m_minio)
-        inserts_added += 1
-        stmt_set.add_insert_sql(ddl_insert_trade_anom_price_up_5m_minio)
-        inserts_added += 1
-        stmt_set.add_insert_sql(ddl_insert_trade_anom_price_down_5m_minio)
-        inserts_added += 1
-        stmt_set.add_insert_sql(ddl_insert_trade_anom_qty_15m_minio)
+        stmt_set.add_insert_sql(ddl_insert_trade_anomalies_minio)
         inserts_added += 1
 
     if settings.ENABLE_CLICKHOUSE_SINK:
         stmt_set.add_insert_sql(ddl_insert_silver_to_clickhouse)
         inserts_added += 1
-        stmt_set.add_insert_sql(ddl_insert_gold_to_clickhouse)
-        inserts_added += 1
-        stmt_set.add_insert_sql(ddl_insert_price_alerts_clickhouse)
-        inserts_added += 1
-        stmt_set.add_insert_sql(ddl_insert_trade_anom_qty_5m_clickhouse)
-        inserts_added += 1
-        stmt_set.add_insert_sql(ddl_insert_trade_anom_price_up_5m_clickhouse)
-        inserts_added += 1
-        stmt_set.add_insert_sql(ddl_insert_trade_anom_price_down_5m_clickhouse)
-        inserts_added += 1
-        stmt_set.add_insert_sql(ddl_insert_trade_anom_qty_15m_clickhouse)
+        stmt_set.add_insert_sql(ddl_insert_trade_anomalies_clickhouse)
         inserts_added += 1
 
     if inserts_added == 0:
