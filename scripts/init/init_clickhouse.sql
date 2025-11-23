@@ -5,27 +5,8 @@
 -- Database
 CREATE DATABASE IF NOT EXISTS binance_trades;
 
--- Bronze (raw JSON trade events)
-CREATE TABLE IF NOT EXISTS binance_trades.bronze_trades (
-    e String,
-    E UInt64,
-    s String,
-    t UInt64,
-    p String,
-    q String,
-    T UInt64,
-    m UInt8,
-    M UInt8,
-    ts DateTime64(3),
-    ingest_time DateTime DEFAULT now()
-)
-ENGINE = MergeTree
-PARTITION BY toDate(ts)
-ORDER BY (s, ts)
-SETTINGS index_granularity = 8192;
-
 -- Silver (raw trades standardized)
-CREATE TABLE IF NOT EXISTS binance_trades.raw_trades (
+CREATE TABLE IF NOT EXISTS binance_trades.processed_trades (
     symbol String,
     price Float64,
     quantity Float64,
