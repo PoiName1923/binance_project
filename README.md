@@ -1,170 +1,92 @@
-# Hệ thống ETL thời gian thực Binance với Flink, Kafka, ClickHouse, MinIO
+# Hệ thống streaming giao dịch Binance (Flink + Kafka + ClickHouse + MinIO)
 
-Dự án này xây dựng một pipeline xử lý dữ liệu thời gian thực cho sự kiện giao dịch (trade) từ Binance. Dữ liệu được đưa vào Kafka, xử lý bằng Apache Flink (PyFlink Table API/SQL) và được ghi ra ClickHouse để phân tích. MinIO được sử dụng cho checkpoint/savepoint của Flink. Hệ thống cũng bao gồm cảnh báo (price alerts) và phát hiện bất thường (trade anomalies), cùng giao diện quan sát trên ClickHouse UI.
+Pipeline thời gian thực lấy dữ liệu trade từ Binance WebSocket, đẩy vào Kafka, xử lý bằng PyFlink Table API/SQL và ghi ra ClickHouse và/hoặc MinIO. MinIO đồng thời lưu checkpoint/savepoint cho Flink.
 
-## Kiến trúc tổng quan
+## Thành phần & cổng mặc định
+- Kafka broker + Kafka UI (8080), topic chính `KAFKA_TOPIC` (`binance-trades` mặc định)
+- 2 producer Python (WebSocket Binance → Kafka) dùng `symbols_1.txt` và `symbols_2.txt`
+- Flink: JobManager UI 8081, TaskManager, service `flink-submit` tự chạy job `BinanceTradePipeline`
+- ClickHouse server (TCP 9002, HTTP 8123) + UI `ch-ui` tại 3000; service `clickhouse-init` tạo schema
+- MinIO (S3-compatible) 9000, console 8084; service `minio-init` tạo bucket
+- Grafana (3001) trống, dùng để tự dựng dashboard nếu cần
 
-- Kafka (broker + Kafka UI)
-  - Chủ đề: `binance-trades`
-  - Producer: WebSocket Binance → Kafka (Python bất đồng bộ)
-  - Service init: `kafka-init` tự tạo topic nếu chưa có
-- Flink (JobManager, TaskManager, consumer job bằng PyFlink)
-  - Đọc từ Kafka, xử lý cửa sổ (window) và ghi vào ClickHouse qua JDBC
-  - Checkpoint/savepoint lưu trên MinIO thông qua S3A
-- ClickHouse
-  - Lưu bảng silver (raw chuẩn hoá), gold (OHLCV), alerts và anomalies để truy vấn phân tích
-  - Có sẵn web UI (Tabix client)
-  - Service init: `clickhouse-init` tự chạy `init_clickhouse.sql` tạo DB/bảng nếu chưa có
-- MinIO
-  - Lưu checkpoint/savepoint của Flink
-  - Service init: `minio-init` tự tạo bucket nếu chưa có
+## Luồng dữ liệu
+1. `producer-1` và `producer-2` mở WebSocket Binance, đọc danh sách symbol từ `src/producer/symbols_1.txt` và `src/producer/symbols_2.txt`, gửi trade JSON vào Kafka topic.
+2. Flink job đọc Kafka nguồn `kafka_sources`, chuẩn hoá và tạo view `silver_view`.
+3. Tuỳ `SINK_TARGET` (`clickhouse|minio|both`), job:
+   - Ghi dữ liệu chuẩn hoá (silver) vào ClickHouse bảng `processed_trades` và/hoặc MinIO (`silver/hourly`).
+   - Ghi dữ liệu thô (bronze) vào MinIO (`raw/hourly`).
+   - Tính toán bất thường 5 phút (price spike up/down, volatility spike, volume spike so với trung bình 20 window, intertrade gap >= 60s, burst giao dịch 5s, lỗi dữ liệu) và ghi vào ClickHouse bảng `trade_anomalies` và/hoặc MinIO (`anomalies`).
+4. Checkpoint/savepoint của Flink lưu trên MinIO (`s3a://<MINIO_BUCKET>/flink/...`).
 
-Các cổng mặc định (có thể thay đổi qua `.env`/compose):
-- Kafka UI: http://localhost:8080
-- Flink UI: http://localhost:8081
-- ClickHouse HTTP: http://localhost:8123 (UI Tabix: http://localhost:8086)
-- MinIO: http://localhost:9000 (console: http://localhost:8084)
+## Lược đồ chính
+- Kafka source `kafka_sources`: `e, E, s, t, p, q, T, m, M, ts (event_time), WATERMARK ts - 5s`.
+- ClickHouse `processed_trades` (`scripts/init/init_clickhouse.sql`): `symbol, price, quantity, event_time, trade_time, is_maker, ingest_time`.
+- ClickHouse `trade_anomalies`: `window_start, window_end, symbol, anomaly_type, category, severity, direction, metric, threshold, window_sec, trade_id, trade_time, price, quantity, volume, trade_count, buy_volume, sell_volume, gap_ms, details`.
+- MinIO sinks (filesystem connector):
+  - `raw/hourly`: dữ liệu thô + partition `dt`, `hour_bucket`.
+  - `silver/hourly`: dữ liệu chuẩn hoá + partition `dt`, `hour_bucket`.
+  - `anomalies`: dữ liệu bất thường + partition `dt`, `hour_bucket`.
 
-## Luồng dữ liệu & các lớp dữ liệu
+## Chuẩn bị
+1. Cài Docker + Docker Compose (RAM ~4–6 GB cho toàn bộ stack).
+2. Tạo file `.env` từ `.env.example` rồi chỉnh thông số:
+   - Kafka: `KAFKA_HOST`, `KAFKA_PORT`, `KAFKA_TOPIC`.
+   - MinIO: `MINIO_HOST`, `MINIO_PORT`, `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD`, `MINIO_BUCKET`.
+   - ClickHouse: `CLICKHOUSE_HOST`, `CLICKHOUSE_TCP_PORT`, `CLICKHOUSE_HTTP_PORT`, `CLICKHOUSE_USER`, `CLICKHOUSE_PASSWORD`, `CLICKHOUSE_DATABASE`, tên bảng nếu đổi.
+   - Flink sink: `SINK_TARGET=clickhouse|minio|both` (mặc định `clickhouse` trong `.env.example`).
+   - Tuỳ chọn Grafana: `GF_SECURITY_ADMIN_USER`, `GF_SECURITY_ADMIN_PASSWORD`.
 
-- Bronze (raw từ Kafka)
-  - Dữ liệu JSON sự kiện trade từ Binance được đọc từ Kafka (bảng nguồn `kafka_sources`).
-  - Có sink ClickHouse để lưu bản sao dữ liệu thô (bảng bronze).
-- Silver (chuẩn hoá)
-  - Chuẩn hoá và ép kiểu: `symbol`, `price` (DOUBLE), `quantity` (DOUBLE), `event_time`, `trade_time`, `is_maker`.
-  - Được định nghĩa dưới dạng view tạm thời `silver_view` và ghi vào bảng ClickHouse silver.
-- Gold (tổng hợp)
-  - Tính OHLCV + VWAP theo cửa sổ 1 phút (và view 5m/15m để phục vụ alert/anomaly).
-  - Phương pháp lấy Open/Close dùng `ROW_NUMBER` theo thứ tự thời gian trong từng cửa sổ.
-  - Kết quả (1 phút) ghi vào bảng ClickHouse gold (aggregated trades).
-- Alerts (cảnh báo biến động giá)
-  - Cảnh báo cho 1m/5m/15m: candle move và range spike, chấm điểm severity theo ngưỡng phần trăm.
-  - Ghi vào bảng ClickHouse `price_alerts`.
-- Anomalies (bất thường giao dịch)
-  - 5m: giao dịch khối lượng lớn, giá tăng/giảm đột biến; 15m: khối lượng lớn.
-  - Dùng z-score so với trung bình/độ lệch chuẩn trong cửa sổ.
-  - Ghi vào bảng ClickHouse `trade_anomalies`.
-
-Các file chính:
-
-- Consumer (Flink) – thư mục `src/consumer/jobs/`
-  - `ddl/ddl_schema.py`: DDL nguồn Kafka
-  - `ddl/ddl_sink.py`: DDL sink ClickHouse (JDBC)
-  - `ddl/ddl_flow.py`: SQL chuẩn hoá (silver), tổng hợp (gold), alerts và anomalies
-  - `main.py`: Điểm vào job, tạo bảng/view và submit các insert đồng thời
-  - `settings.py`: Đọc cấu hình từ biến môi trường `.env`
-  - `init_clickhouse.sql`: Script khởi tạo database/bảng ClickHouse (DDL thuần SQL)
-- Producer (Kafka) – thư mục `src/producer/`
-  - `producer.py`: WebSocket Binance → Kafka (async, aiokafka)
-  - `settings.py`: Đọc cấu hình Kafka và đường dẫn file symbol
-  - `symbols_1.txt`, `symbols_2.txt`: Danh sách symbol cho từng instance producer
-
-## Lược đồ ClickHouse (chính)
-
-- Bronze: `e, E, s, t, p, q, T, m, M, ts, ingest_time`
-- Silver (raw chuẩn hoá): `symbol, price, quantity, event_time, trade_time, is_maker, ingest_time`
-- Gold (OHLCV + VWAP): `window_start, window_end, symbol, open_price, high, low, close_price, volume, vwap`
-- Price Alerts: `window_start, window_end, symbol, window_size, alert_type, direction, pct_change, range_pct, open_price, high, low, close_price, volume, severity, details`
-- Trade Anomalies: `window_start, window_end, symbol, anomaly_type, severity, trade_id, trade_time, price, quantity, z_score, avg_metric, stddev_metric, window_sec, details`
-
-Lưu ý: file `init_clickhouse.sql` chứa toàn bộ DDL tạo database/bảng. Nếu cần migrate schema cũ, trong file có sẵn các câu `ALTER TABLE` dạng comment bạn có thể bật lên và chạy thủ công bằng `clickhouse-client`.
-
-## Cấu trúc dự án
-
-```
-src/
-  producer/              # Producer Binance → Kafka (Python async)
-    Dockerfile
-    producer.py
-    requirements.txt
-    settings.py
-    symbols_1.txt
-    symbols_2.txt
-  consumer/              # Flink consumer (PyFlink)
-    Dockerfile           # Ảnh Flink với PyFlink + drivers/connectors
-    jars/                # Các JAR connector/driver copy vào /opt/flink/lib
-    jobs/
-      main.py            # Orchestrate DDL + statement set
-      settings.py        # Cấu hình Kafka/ClickHouse/MinIO
-      init_clickhouse.sql
-      ddl/
-        ddl_schema.py    # Kafka source
-        ddl_sink.py      # ClickHouse sinks (JDBC)
-        ddl_flow.py      # Silver/Gold, Alerts, Anomalies
-docker-compose.yml       # Toàn bộ stack: Kafka, Flink, MinIO, ClickHouse
-data/                    # Volume dữ liệu (ClickHouse, Kafka, MinIO, ...)
-logs/                    # Log ClickHouse, Kafka
-.env.example             # Mẫu biến môi trường
-scripts/
-  init/
-    kafka_topic_init.sh  # Tạo Kafka topic nếu chưa tồn tại (service kafka-init)
-    minio_bucket_init.sh # Tạo MinIO bucket nếu chưa tồn tại (service minio-init)
-  bootstrap_env.sh       # (Tuỳ chọn) bootstrap thủ công topic/bucket/schema
-  start_with_bootstrap.sh# (Tuỳ chọn) start stack + bootstrap một lần
-```
-
-## Yêu cầu môi trường
-
-- Docker + Docker Compose
-- RAM gợi ý: ~4–6 GB cho toàn bộ stack
-- Internet để kéo image và (tuỳ chọn) tải các JAR connector của Flink
-
-## Thiết lập biến môi trường
-
-
-Các biến chính cần thiết lập trong `.env` ở thư mục gốc:
-- Kafka: `KAFKA_HOST`, `KAFKA_PORT`, `KAFKA_TOPIC`
-- ClickHouse: `CLICKHOUSE_HOST`, `CLICKHOUSE_*_PORT`, `CLICKHOUSE_USER`, `CLICKHOUSE_PASSWORD`, `CLICKHOUSE_DATABASE`, tên bảng
-- MinIO: `MINIO_HOST`, `MINIO_PORT`, `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD`, `MINIO_BUCKET`
-
-## Cách chạy
-
-1) Build và khởi động toàn bộ stack:
-
-```
+## Chạy nhanh
+```bash
 docker compose up -d --build
 ```
+- `kafka-init`, `minio-init`, `clickhouse-init` chạy một lần để tạo topic/bucket/schema.
+- `flink-submit` đợi TaskManager sẵn sàng rồi nộp job `BinanceTradePipeline`.
+- Kiểm tra: `docker compose ps` hoặc Flink UI http://localhost:8081.
 
-2) Kiểm tra dịch vụ & dữ liệu:
-
-- Flink UI: http://localhost:8081 (job consumer ở trạng thái RUNNING)
-- Kafka UI: http://localhost:8080 (topic `binance-trades` có dữ liệu)
-- ClickHouse UI: http://localhost:8086 (truy vấn các bảng silver/gold/alerts/anomalies)
-- MinIO: http://localhost:9000 (để ý checkpoint/savepoint của Flink)
-
-Các service `kafka-init`, `minio-init`, `clickhouse-init` sẽ tự chạy một lần khi stack khởi động để đảm bảo:
-- Kafka đã có topic `binance-trades`.
-- MinIO đã có bucket `${MINIO_BUCKET}`.
-- ClickHouse đã có DB/bảng theo `init_clickhouse.sql`.
-
-## Câu lệnh ClickHouse mẫu
-
-OHLCV 1 phút gần nhất của một symbol:
-
+Tắt stack và xoá volume nếu cần:
+```bash
+docker compose down -v
 ```
-SELECT *
-FROM ${CLICKHOUSE_DATABASE}.${CLICKHOUSE_AGG_TABLE}
-WHERE symbol = 'btcusdt'
-ORDER BY window_start DESC
+
+## Quan sát & truy cập
+- Kafka UI: http://localhost:8080 (thấy topic và message).
+- Flink UI: http://localhost:8081 (job đang RUNNING).
+- ClickHouse UI: http://localhost:3000 (ch-ui), hoặc HTTP API tại http://localhost:8123.
+- MinIO: http://localhost:9000 (console: http://localhost:8084).
+- Grafana: http://localhost:3001 (chưa có dashboard sẵn).
+
+## Truy vấn ClickHouse mẫu
+- Trades mới nhất:
+```sql
+SELECT symbol, price, quantity, event_time, trade_time, is_maker
+FROM binance_trades.processed_trades
+ORDER BY event_time DESC
 LIMIT 100;
 ```
-
-Cảnh báo giá mức CRITICAL/HIGH:
-
-```
-SELECT window_start, symbol, window_size, alert_type, direction, pct_change, range_pct, severity
-FROM ${CLICKHOUSE_DATABASE}.${CLICKHOUSE_ALERT_TABLE}
-WHERE severity IN ('CRITICAL', 'HIGH')
+- Bất thường mức MEDIUM trở lên:
+```sql
+SELECT window_start, symbol, anomaly_type, severity, metric, details
+FROM binance_trades.trade_anomalies
+WHERE severity IN ('CRITICAL','HIGH','MEDIUM')
 ORDER BY window_start DESC
 LIMIT 200;
 ```
 
-Giao dịch bất thường 5m/15m:
+## Cấu trúc thư mục chính
+- `docker-compose.yml`: định nghĩa toàn bộ stack và lệnh submit Flink.
+- `src/producer/producer.py`: WebSocket Binance → Kafka (async, aiokafka); `symbols_1.txt` / `symbols_2.txt` chứa danh sách cặp giao dịch.
+- `src/consumer/jobs/main.py`: khởi tạo nguồn/sink, tạo view và chạy statement set.
+- `src/consumer/jobs/ddl/ddl_schema.py`: Kafka source DDL.
+- `src/consumer/jobs/ddl/ddl_sink.py`: sink ClickHouse/MinIO và tuỳ biến theo `SINK_TARGET`.
+- `src/consumer/jobs/ddl/ddl_flow.py`: logic chuẩn hoá và phát hiện bất thường 5 phút.
+- `src/consumer/flink-conf.yml`: cấu hình Flink, checkpoint S3A về MinIO.
+- `scripts/init/init_clickhouse.sql`: DDL tạo `processed_trades`, `trade_anomalies`.
+- `scripts/init/kafka_topic_init.sh`, `scripts/init/minio_bucket_init.sh`: init topic/bucket.
 
-```
-SELECT window_start, symbol, anomaly_type, severity, trade_id, trade_time, price, quantity, z_score, details
-FROM ${CLICKHOUSE_DATABASE}.${CLICKHOUSE_ANOM_TABLE}
-WHERE severity IN ('CRITICAL','HIGH')
-ORDER BY window_start DESC
-LIMIT 200;
-```
+## Lưu ý vận hành
+- `SINK_TARGET=both` để vừa ghi ClickHouse vừa lưu file trên MinIO (hữu ích cho backup/lake).
+- Các JAR connector (Kafka, ClickHouse, S3, JSON) đã được copy sẵn vào `src/consumer/jars`.
+- Chỉnh danh sách symbol để giảm tải hoặc thêm cặp mới trước khi `docker compose up`.
+- Flink checkpoint/savepoint nằm trong bucket MinIO, giữ lại khi restart để tránh mất trạng thái.
