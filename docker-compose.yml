@@ -210,7 +210,8 @@ services:
       - .env
     environment:
       SINK_TARGET: ${SINK_TARGET:-clickhouse}
-    command: jobmanager
+    command: >
+      bash -lc "envsubst < /opt/flink/custom-conf/flink-conf.yaml.template > /opt/flink/conf/flink-conf.yaml && exec /docker-entrypoint.sh jobmanager"
     mem_limit: 1024m
     cpus: 0.75
     networks:
@@ -228,9 +229,30 @@ services:
       - .env
     environment:
       SINK_TARGET: ${SINK_TARGET:-clickhouse}
-    command: taskmanager
+    command: >
+      bash -lc "envsubst < /opt/flink/custom-conf/flink-conf.yaml.template > /opt/flink/conf/flink-conf.yaml && exec /docker-entrypoint.sh taskmanager"
     mem_limit: 4096m
     cpus: 2.0
+    networks:
+      - project-network
+
+  # ==============================================================================================================================
+  flink-submit:
+    build:
+      context: ./src/consumer/.
+      dockerfile: Dockerfile
+    container_name: flink-submit
+    depends_on:
+      - jobmanager
+      - taskmanager
+    env_file:
+      - .env
+    environment:
+      SINK_TARGET: ${SINK_TARGET:-clickhouse}
+    command: >
+      bash -lc "envsubst < /opt/flink/custom-conf/flink-conf.yaml.template > /opt/flink/conf/flink-conf.yaml && until curl -s http://jobmanager:8081/overview | grep -E '\"slots-total\":[1-9]'; do echo '[flink-submit] waiting for TaskManagers...'; sleep 3; done; flink run -d -m jobmanager:8081 -py /opt/flink/jobs/main.py --pyFiles /opt/flink/jobs"
+    mem_limit: 256m
+    cpus: 0.25
     networks:
       - project-network
 
