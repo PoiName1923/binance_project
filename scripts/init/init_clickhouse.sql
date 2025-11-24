@@ -1,6 +1,4 @@
 -- Initialize ClickHouse schema for Binance ETL pipeline
--- Equivalent to init_clickhouse.py (without dynamic Python logic)
--- Adjust database/table names below if you use non-default values.
 
 -- Database
 CREATE DATABASE IF NOT EXISTS binance_trades;
@@ -37,7 +35,7 @@ CREATE TABLE IF NOT EXISTS binance_trades.trade_anomalies (
     price Float64,
     quantity Float64,
     volume Float64,
-    trade_count UInt32,
+    trade_count UInt64,
     buy_volume Float64,
     sell_volume Float64,
     gap_ms UInt64,
