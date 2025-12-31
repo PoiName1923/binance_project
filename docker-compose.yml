@@ -48,27 +48,6 @@ services:
     networks:
       - project-network
 
-# ============================================================================================================================  
-  ch-ui:
-    image: ghcr.io/duyet/clickhouse-monitoring:456ad9c
-    container_name: clickhouse-ui
-    restart: always
-    depends_on:
-      clickhouse:
-        condition: service_healthy
-    ports:
-      - "3000:3000"
-    environment:
-      CLICKHOUSE_HOST: http://${CLICKHOUSE_HOST}:${CLICKHOUSE_HTTP_PORT}
-      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-default}
-      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-clickhouse}
-      CLICKHOUSE_TZ: Asia/Ho_Chi_Minh
-      CLICKHOUSE_MAX_EXECUTION_TIME: 15
-      NEXT_QUERY_CACHE_TTL: 86400
-    mem_limit: 256m
-    cpus: 0.25
-    networks:
-      - project-network
 # ===========================================================================================================================================================
 # ================================================================ KAFKA CONFIG ============================================================================
 # ===========================================================================================================================================================
@@ -128,34 +107,12 @@ services:
     networks:
       - project-network
 
-# ============================================================================================================================
-  kafka-ui:
-    image: provectuslabs/kafka-ui:latest
-    container_name: kafka-ui
-    ports:
-      - "8080:8080"
-    depends_on:
-      kafka:
-        condition: service_healthy
-    environment:
-      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
-      KAFKA_CLUSTERS_0_NAME: local
-    mem_limit: 256m
-    cpus: 0.25
-    networks:
-      - project-network
-    healthcheck:
-      test: ["CMD-SHELL", "sh", "curl -f http://localhost:8080/actuator/health || exit 1"]
-      interval: 15s
-      timeout: 10s
-      retries: 20
-
 # ===========================================================================================================================================================
 # ====================================================================== DATA SCRAPING ======================================================================
 # ===========================================================================================================================================================
   producer-1:
     build:
-      context: ./src/producer/.
+      context: ./datasourcs/producer/.
       dockerfile: Dockerfile
     container_name: producer-1
     restart: on-failure
@@ -174,7 +131,7 @@ services:
 # ============================================================================================================================  
   producer-2:
     build:
-      context: ./src/producer/.
+      context: ./datasourcs/producer/.
       dockerfile: Dockerfile
     container_name: producer-2
     restart: on-failure
@@ -194,7 +151,7 @@ services:
 # ===========================================================================================================================================================
   jobmanager:
     build:
-      context: ./src/consumer/.
+      context: ./datasourcs/consumer/.
       dockerfile: Dockerfile
     container_name: flink-jobmanager
     hostname: jobmanager
@@ -220,7 +177,7 @@ services:
 # ==============================================================================================================================
   taskmanager:
     build:
-      context: ./src/consumer/.
+      context: ./datasourcs/consumer/.
       dockerfile: Dockerfile
     container_name: flink-taskmanager
     hostname: taskmanager
@@ -239,7 +196,7 @@ services:
   # ==============================================================================================================================
   flink-submit:
     build:
-      context: ./src/consumer/.
+      context: ./datasourcs/consumer/.
       dockerfile: Dockerfile
     container_name: flink-submit
     depends_on:

@@ -2,6 +2,12 @@
 
 Pipeline thời gian thực lấy dữ liệu trade từ Binance WebSocket, đẩy vào Kafka, xử lý bằng PyFlink Table API/SQL và ghi ra ClickHouse và/hoặc MinIO. MinIO đồng thời lưu checkpoint/savepoint cho Flink.
 
+## Mục tiêu
+- Thu thập dữ liệu giao dịch Binance theo thời gian thực, có thể mở rộng theo danh sách symbol.
+- Chuẩn hoá và lưu trữ dữ liệu để truy vấn nhanh (ClickHouse) và/hoặc lưu trữ dạng lake (MinIO).
+- Phát hiện bất thường giao dịch trong cửa sổ 5 phút để hỗ trợ giám sát.
+- Dễ triển khai bằng Docker Compose, dễ quan sát bằng UI sẵn có.
+
 ## Thành phần & cổng mặc định
 - Kafka broker + Kafka UI (8080), topic chính `KAFKA_TOPIC` (`binance-trades` mặc định)
 - 2 producer Python (WebSocket Binance → Kafka) dùng `symbols_1.txt` và `symbols_2.txt`
@@ -10,14 +16,21 @@ Pipeline thời gian thực lấy dữ liệu trade từ Binance WebSocket, đ�
 - MinIO (S3-compatible) 9000, console 8084; service `minio-init` tạo bucket
 - Grafana (3001) trống, dùng để tự dựng dashboard nếu cần
 
-## Luồng dữ liệu
-1. `producer-1` và `producer-2` mở WebSocket Binance, đọc danh sách symbol từ `src/producer/symbols_1.txt` và `src/producer/symbols_2.txt`, gửi trade JSON vào Kafka topic.
+## Quá trình xử lý dữ liệu
+1. `producer-1` và `producer-2` mở WebSocket Binance, đọc danh sách symbol từ `datasourcs/producer/symbols_1.txt` và `datasourcs/producer/symbols_2.txt`, gửi trade JSON vào Kafka topic.
 2. Flink job đọc Kafka nguồn `kafka_sources`, chuẩn hoá và tạo view `silver_view`.
 3. Tuỳ `SINK_TARGET` (`clickhouse|minio|both`), job:
    - Ghi dữ liệu chuẩn hoá (silver) vào ClickHouse bảng `processed_trades` và/hoặc MinIO (`silver/hourly`).
    - Ghi dữ liệu thô (bronze) vào MinIO (`raw/hourly`).
    - Tính toán bất thường 5 phút (price spike up/down, volatility spike, volume spike so với trung bình 20 window, intertrade gap >= 60s, burst giao dịch 5s, lỗi dữ liệu) và ghi vào ClickHouse bảng `trade_anomalies` và/hoặc MinIO (`anomalies`).
 4. Checkpoint/savepoint của Flink lưu trên MinIO (`s3a://<MINIO_BUCKET>/flink/...`).
+
+## Kết quả đạt được
+- Luồng dữ liệu realtime được ingest vào Kafka và xử lý liên tục bởi Flink.
+- Dữ liệu chuẩn hoá sẵn sàng truy vấn trong ClickHouse (`processed_trades`).
+- Dữ liệu thô và dữ liệu bất thường được lưu theo partition ngày/giờ trên MinIO.
+- Bảng bất thường (`trade_anomalies`) giúp phát hiện nhanh các tín hiệu đáng chú ý trong 5 phút.
+- Có thể dùng file `dashboard.pbix` như tham khảo để tự dựng báo cáo (kết nối dữ liệu theo nhu cầu).
 
 ## Lược đồ chính
 - Kafka source `kafka_sources`: `e, E, s, t, p, q, T, m, M, ts (event_time), WATERMARK ts - 5s`.
@@ -37,7 +50,7 @@ Pipeline thời gian thực lấy dữ liệu trade từ Binance WebSocket, đ�
    - Flink sink: `SINK_TARGET=clickhouse|minio|both` (mặc định `clickhouse` trong `.env.example`).
    - Tuỳ chọn Grafana: `GF_SECURITY_ADMIN_USER`, `GF_SECURITY_ADMIN_PASSWORD`.
 
-## Chạy nhanh
+## Khởi động nhanh
 ```bash
 docker compose up -d --build
 ```
@@ -76,17 +89,22 @@ LIMIT 200;
 
 ## Cấu trúc thư mục chính
 - `docker-compose.yml`: định nghĩa toàn bộ stack và lệnh submit Flink.
-- `src/producer/producer.py`: WebSocket Binance → Kafka (async, aiokafka); `symbols_1.txt` / `symbols_2.txt` chứa danh sách cặp giao dịch.
-- `src/consumer/jobs/main.py`: khởi tạo nguồn/sink, tạo view và chạy statement set.
-- `src/consumer/jobs/ddl/ddl_schema.py`: Kafka source DDL.
-- `src/consumer/jobs/ddl/ddl_sink.py`: sink ClickHouse/MinIO và tuỳ biến theo `SINK_TARGET`.
-- `src/consumer/jobs/ddl/ddl_flow.py`: logic chuẩn hoá và phát hiện bất thường 5 phút.
-- `src/consumer/flink-conf.yml`: cấu hình Flink, checkpoint S3A về MinIO.
+- `datasourcs/producer/producer.py`: WebSocket Binance → Kafka (async, aiokafka); `symbols_1.txt` / `symbols_2.txt` chứa danh sách cặp giao dịch.
+- `datasourcs/consumer/jobs/main.py`: khởi tạo nguồn/sink, tạo view và chạy statement set.
+- `datasourcs/consumer/jobs/ddl/ddl_schema.py`: Kafka source DDL.
+- `datasourcs/consumer/jobs/ddl/ddl_sink.py`: sink ClickHouse/MinIO và tuỳ biến theo `SINK_TARGET`.
+- `datasourcs/consumer/jobs/ddl/ddl_flow.py`: logic chuẩn hoá và phát hiện bất thường 5 phút.
+- `datasourcs/consumer/flink-conf.yml`: cấu hình Flink, checkpoint S3A về MinIO.
 - `scripts/init/init_clickhouse.sql`: DDL tạo `processed_trades`, `trade_anomalies`.
+- `scripts/init/init_postgres.sql`: phác thảo schema cho nền tảng analyst (chưa bật trong docker-compose).
 - `scripts/init/kafka_topic_init.sh`, `scripts/init/minio_bucket_init.sh`: init topic/bucket.
 
 ## Lưu ý vận hành
 - `SINK_TARGET=both` để vừa ghi ClickHouse vừa lưu file trên MinIO (hữu ích cho backup/lake).
-- Các JAR connector (Kafka, ClickHouse, S3, JSON) đã được copy sẵn vào `src/consumer/jars`.
+- Các JAR connector (Kafka, ClickHouse, S3, JSON) đã được copy sẵn vào `datasourcs/consumer/jars`.
 - Chỉnh danh sách symbol để giảm tải hoặc thêm cặp mới trước khi `docker compose up`.
 - Flink checkpoint/savepoint nằm trong bucket MinIO, giữ lại khi restart để tránh mất trạng thái.
+
+
+## Mở rộng
+Đang trong quá trình mở rộng để có thể kết hợp AI để người dùng có thể tương tác.
